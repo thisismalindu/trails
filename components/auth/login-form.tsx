@@ -1,26 +1,32 @@
 "use client";
 
-import { zodResolver } from "@hookform/resolvers/zod";
-import { ArrowRight } from "lucide-react";
-import { useRouter } from "next/navigation";
-import { useForm } from "react-hook-form";
-import { z } from "zod";
+import { GitBranch, LoaderCircle } from "lucide-react";
+import { useState } from "react";
 import { Brand } from "@/components/layout/brand";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { loginSchema } from "@/lib/schemas";
 import { useNavigationProgress } from "@/components/shared/navigation-transition";
-
-type LoginValues = z.infer<typeof loginSchema>;
+import { createClient } from "@/lib/supabase/client";
 
 export function LoginForm() {
-  const router = useRouter();
   const { beginNavigation } = useNavigationProgress();
-  const { register, handleSubmit, formState: { errors } } = useForm<LoginValues>({
-    resolver: zodResolver(loginSchema),
-    defaultValues: { email: "", password: "" },
-  });
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const startGitHubLogin = async () => {
+    setPending(true);
+    setError(null);
+    try {
+      const supabase = createClient();
+      const { error: authError } = await supabase.auth.signInWithOAuth({
+        provider: "github",
+        options: { redirectTo: `${window.location.origin}/auth/callback?next=/roadmaps` },
+      });
+      if (authError) throw authError;
+      beginNavigation();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "GitHub sign-in could not be started.");
+      setPending(false);
+    }
+  };
 
   return (
     <main className="min-h-svh bg-shell text-shell-foreground">
@@ -31,22 +37,11 @@ export function LoginForm() {
         <div className="relative w-full rounded-lg border border-shell-border bg-shell-input/45 p-5 sm:p-6">
           <div aria-hidden="true" className="trail-route-line absolute -top-px right-6 left-6 h-px opacity-80" />
           <h1 className="text-xl font-semibold tracking-[-0.025em]">Sign in to Trails</h1>
-          <p className="mt-1 text-sm text-shell-muted">Frontend preview. No credentials are stored or sent.</p>
-          <form className="mt-6 space-y-4" onSubmit={handleSubmit(() => { beginNavigation(); router.push("/roadmaps"); })}>
-            <div className="space-y-1.5">
-              <Label htmlFor="email" className="text-shell-foreground">Email or username</Label>
-              <Input id="email" autoFocus autoComplete="username" className="border-shell-border bg-shell-input text-shell-foreground placeholder:text-shell-muted" placeholder="Anything works" aria-invalid={Boolean(errors.email)} aria-describedby={errors.email ? "email-error" : undefined} {...register("email")} />
-              {errors.email && <p id="email-error" className="text-xs text-ember-light">{errors.email.message}</p>}
-            </div>
-            <div className="space-y-1.5">
-              <Label htmlFor="password" className="text-shell-foreground">Password</Label>
-              <Input id="password" type="password" autoComplete="current-password" className="border-shell-border bg-shell-input text-shell-foreground placeholder:text-shell-muted" placeholder="Enter anything" aria-invalid={Boolean(errors.password)} aria-describedby={errors.password ? "password-error" : undefined} {...register("password")} />
-              {errors.password && <p id="password-error" className="text-xs text-ember-light">{errors.password.message}</p>}
-            </div>
-            <Button type="submit" className="w-full bg-ember text-white hover:bg-[#af523c] active:bg-[#934632]">
-              Continue <ArrowRight />
-            </Button>
-          </form>
+          <p className="mt-1 text-sm text-shell-muted">Use your GitHub account to access your learning roadmaps.</p>
+          <Button type="button" disabled={pending} onClick={startGitHubLogin} className="mt-6 w-full bg-ember text-white hover:bg-[#af523c] active:bg-[#934632]">
+            {pending ? <LoaderCircle className="animate-spin" /> : <GitBranch />} Continue with GitHub
+          </Button>
+          {error && <p role="alert" className="mt-3 text-xs text-ember-light">{error}</p>}
         </div>
       </div>
     </main>

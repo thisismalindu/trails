@@ -7,20 +7,21 @@ import { TransitionLink } from "@/components/shared/navigation-transition";
 import { PresenceSwap } from "@/components/shared/route-transition";
 import { cn } from "@/lib/utils";
 import { useWorkspaceBySlug, WorkspaceProvider } from "@/state/roadmap-store";
+import type { RoadmapWorkspace } from "@/lib/types";
 
 const sections = ["plan", "progress", "quiz"] as const;
 
-export function RoadmapWorkspaceShell({ slug, children }: { slug: string; children: ReactNode }) {
+export function RoadmapWorkspaceShell({ slug, initialWorkspace, children }: { slug: string; initialWorkspace: RoadmapWorkspace | null; children: ReactNode }) {
   const pathname = usePathname();
   const activeSegment = useSelectedLayoutSegment();
-  const workspace = useWorkspaceBySlug(slug);
+  const workspace = useWorkspaceBySlug(slug) ?? initialWorkspace;
 
   if (!workspace) {
     return (
       <main className="mx-auto grid min-h-[calc(100svh-3rem)] max-w-xl place-content-center px-5 text-center">
         <h1 className="text-xl font-semibold">Roadmap not found</h1>
         <p className="mt-2 text-sm leading-6 text-muted-foreground">
-          This roadmap may have been created in an earlier preview session. In-memory data resets when the page reloads.
+          It may have been deleted or you may not have access to it.
         </p>
         <TransitionLink className="mt-5 inline-flex items-center justify-center gap-2 text-sm font-medium text-primary hover:underline" href="/roadmaps">
           <ArrowLeft className="size-4" /> Back to roadmaps
@@ -30,7 +31,7 @@ export function RoadmapWorkspaceShell({ slug, children }: { slug: string; childr
   }
 
   return (
-    <WorkspaceProvider roadmapId={workspace.roadmap.id}>
+    <WorkspaceProvider roadmapId={workspace.roadmap.id} initialWorkspace={workspace}>
       <div className="sticky top-12 z-30 border-b bg-surface-raised">
         <div className="mx-auto grid h-10 max-w-[1440px] grid-cols-1 items-center px-4 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] sm:px-5">
           <TransitionLink href="/roadmaps" className="hidden truncate pr-4 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring sm:block" title={workspace.roadmap.title}>

@@ -1,6 +1,6 @@
 begin;
 
-select plan(32);
+select plan(39);
 
 insert into auth.users (id, aud, role, email, encrypted_password, email_confirmed_at, created_at, updated_at)
 values
@@ -59,11 +59,15 @@ select ok((select count(*) = 4 from pg_policy where polrelid = 'public.quizzes':
 select ok((select count(*) = 2 from pg_policy where polrelid = 'public.quiz_attempts'::regclass), 'attempts expose read and insert policies only');
 select ok(not has_table_privilege('authenticated', 'public.quiz_attempts', 'UPDATE'), 'quiz attempts cannot be updated directly');
 select ok(not has_table_privilege('authenticated', 'public.quiz_attempts', 'DELETE'), 'quiz attempts cannot be deleted directly');
+select ok(has_function_privilege('authenticated', 'public.finish_quiz_attempt(uuid,integer,jsonb,jsonb)', 'EXECUTE'), 'authenticated users can finish their quiz attempts');
+select ok(not has_function_privilege('anon', 'public.finish_quiz_attempt(uuid,integer,jsonb,jsonb)', 'EXECUTE'), 'anonymous users cannot finish quiz attempts');
+select ok(has_function_privilege('authenticated', 'public.list_roadmap_summaries()', 'EXECUTE'), 'authenticated users can list roadmap summaries');
 
 set local role authenticated;
 select set_config('request.jwt.claim.sub', '00000000-0000-4000-8000-00000000aa01', true);
 select is((select count(*) from public.roadmaps where id = '00000000-0000-4000-8000-00000000bb01'), 1::bigint, 'owner can read their own roadmap');
 select is((select count(*) from public.roadmaps where id = '00000000-0000-4000-8000-00000000bb02'), 0::bigint, 'owner cannot read another user roadmap');
+select is((select count(*) from public.list_roadmap_summaries()), 1::bigint, 'roadmap summaries expose only the authenticated owner rows');
 insert into public.roadmaps (id, owner_id, slug, title, objective)
 values ('00000000-0000-4000-8000-00000000bb03', '00000000-0000-4000-8000-00000000aa01', 'owner-one-second', 'Owner one second', 'Another private roadmap for owner one.');
 select is((select count(*) from public.roadmaps where owner_id = '00000000-0000-4000-8000-00000000aa01'), 2::bigint, 'owner can create a roadmap for themselves');
@@ -73,7 +77,23 @@ select is((select revision from public.quizzes where id = '00000000-0000-4000-80
 update public.quizzes set title = 'Renamed quiz' where id = '00000000-0000-4000-8000-00000000cc01';
 select is((select revision from public.quizzes where id = '00000000-0000-4000-8000-00000000cc01'), 2::bigint, 'quiz update increments its optimistic revision');
 select is((select definition_revision from public.quizzes where id = '00000000-0000-4000-8000-00000000cc01'), 2, 'quiz definition revision advances on a definition title edit');
-select is((select revision from public.roadmaps where id = '00000000-0000-4000-8000-00000000bb01'), 3::bigint, 'quiz changes advance the roadmap revision');
+select is(
+  (select correct from public.finish_quiz_attempt(
+    '00000000-0000-4000-8000-00000000cc01', 2,
+    '{"q1":"a1"}'::jsonb,
+    '{"currentIndex":0,"selectedAnswers":{"q1":"a1"},"checkedQuestionIds":["q1"],"hintQuestionIds":[],"view":"results","startedAt":"2026-09-21T00:00:00Z"}'::jsonb
+  )),
+  1,
+  'finishing a quiz records an attempt using the stored definition'
+);
+select is((select count(*) from public.quiz_attempts where quiz_id = '00000000-0000-4000-8000-00000000cc01'), 1::bigint, 'finishing a quiz records one immutable attempt');
+select throws_ok(
+  $$select public.finish_quiz_attempt('00000000-0000-4000-8000-00000000cc01', 1, '{"q1":"a1"}'::jsonb, '{"currentIndex":0,"selectedAnswers":{"q1":"a1"},"checkedQuestionIds":["q1"],"hintQuestionIds":[],"view":"results","startedAt":"2026-09-21T00:00:00Z"}'::jsonb)$$,
+  '40001',
+  'The quiz definition changed before this attempt was saved.',
+  'finishing a quiz rejects stale quiz definitions'
+);
+select is((select revision from public.roadmaps where id = '00000000-0000-4000-8000-00000000bb01'), 5::bigint, 'quiz changes advance the roadmap revision');
 select throws_ok(
   $$insert into public.roadmaps (owner_id, slug, title, objective) values ('00000000-0000-4000-8000-00000000aa02', 'forged-owner', 'Forged', 'Should be rejected.')$$,
   '42501',

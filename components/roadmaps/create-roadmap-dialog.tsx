@@ -28,20 +28,21 @@ export function CreateRoadmapDialog({ open, onOpenChange }: { open: boolean; onO
   const router = useRouter();
   const { beginNavigation } = useNavigationProgress();
   const { state, dispatch } = useRoadmaps();
-  const { register, handleSubmit, reset, formState: { errors } } = useForm<RoadmapValues>({
+  const { register, handleSubmit, reset, formState: { errors, isSubmitting } } = useForm<RoadmapValues>({
     resolver: zodResolver(onboardingSchema),
     defaultValues: { title: "", objective: "" },
   });
 
-  const submit = (values: RoadmapValues) => {
-    const slug = uniqueRoadmapSlug(values.title, state.workspaces.map((item) => item.roadmap.slug));
+  const submit = async (values: RoadmapValues) => {
+    const slug = uniqueRoadmapSlug(values.title, state.roadmaps.map((item) => item.slug));
     const workspace = createEmptyWorkspace({
       id: crypto.randomUUID(),
       slug,
       title: values.title,
       objective: values.objective,
     });
-    dispatch({ type: "CREATE_ROADMAP", payload: workspace });
+    const saved = await dispatch({ type: "CREATE_ROADMAP", payload: workspace });
+    if (!saved) { toast.error("Could not create roadmap", { description: "Check your connection and try again." }); return; }
     reset();
     onOpenChange(false);
     toast.success("Roadmap created");
@@ -53,7 +54,7 @@ export function CreateRoadmapDialog({ open, onOpenChange }: { open: boolean; onO
       <DialogContent>
         <DialogHeader>
           <DialogTitle>Create roadmap</DialogTitle>
-          <DialogDescription>Give this learning path a clear outcome. It will only exist until the page reloads.</DialogDescription>
+          <DialogDescription>Give this learning path a clear outcome. It will be saved to your account.</DialogDescription>
         </DialogHeader>
         <form id="create-roadmap-form" className="space-y-4" onSubmit={handleSubmit(submit)}>
           <div className="space-y-1.5">
@@ -69,7 +70,7 @@ export function CreateRoadmapDialog({ open, onOpenChange }: { open: boolean; onO
         </form>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button type="submit" form="create-roadmap-form">Create roadmap</Button>
+          <Button type="submit" form="create-roadmap-form" disabled={isSubmitting}>{isSubmitting ? "Saving…" : "Create roadmap"}</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

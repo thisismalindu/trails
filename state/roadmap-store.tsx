@@ -1,10 +1,12 @@
 "use client";
 
-import { createContext, type ReactNode, useCallback, useContext, useMemo, useReducer, useRef } from "react";
-import { emptyProgress, sampleWorkspaces } from "@/lib/mock-data";
-import type { ProgressData, ProgressItem, ProgressSection, ProgressStatus, QuizAttempt, QuizDefinition, QuizSession, Resource, RoadmapWorkspace, SavedQuiz, SyncState } from "@/lib/types";
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useReducer, useRef } from "react";
+import { emptyProgress } from "@/lib/mock-data";
+import type { ProgressData, ProgressItem, ProgressSection, ProgressStatus, QuizAttempt, QuizDefinition, QuizSession, Resource, RoadmapSummary, RoadmapWorkspace, SavedQuiz, SyncState } from "@/lib/types";
+import { createClient } from "@/lib/supabase/client";
+import { createTrailsRepository } from "@/lib/persistence/supabase-repository";
 
-export type RoadmapState = { workspaces: RoadmapWorkspace[]; sync: SyncState };
+export type RoadmapState = { roadmaps: RoadmapSummary[]; workspaces: RoadmapWorkspace[]; sync: SyncState };
 export type WorkspaceAction =
   | { type: "SAVE_RESOURCE"; payload: Resource }
   | { type: "DELETE_RESOURCE"; payload: string }
@@ -29,9 +31,9 @@ export type RoadmapAction =
   | { type: "UPDATE_ROADMAP"; roadmapId: string; payload: { title: string; objective: string } }
   | { type: "ARCHIVE_ROADMAP" | "RESTORE_ROADMAP" | "DELETE_ROADMAP"; roadmapId: string }
   | { type: "WORKSPACE_ACTION"; roadmapId: string; action: WorkspaceAction };
-type InternalAction = RoadmapAction | { type: "SYNC"; payload: SyncState } | { type: "RESTORE_STATE"; payload: RoadmapState };
+type InternalAction = RoadmapAction | { type: "SYNC"; payload: SyncState } | { type: "RESTORE_STATE"; payload: RoadmapState } | { type: "HYDRATE_STATE"; payload: RoadmapState } | { type: "HYDRATE_WORKSPACE"; payload: RoadmapWorkspace };
 
-export const initialRoadmapState: RoadmapState = { workspaces: sampleWorkspaces, sync: { status: "idle" } };
+export const initialRoadmapState: RoadmapState = { roadmaps: [], workspaces: [], sync: { status: "idle" } };
 const now = () => new Date().toISOString();
 const move = <T,>(values: T[], index: number, direction: -1 | 1) => { const next = [...values]; const target = index + direction; if (index < 0 || target < 0 || target >= next.length) return next; [next[index], next[target]] = [next[target], next[index]]; return next; };
 const touch = (workspace: RoadmapWorkspace): RoadmapWorkspace => ({ ...workspace, roadmap: { ...workspace.roadmap, updatedAt: now(), revision: workspace.roadmap.revision + 1 } });
@@ -57,26 +59,125 @@ function updateWorkspace(workspace: RoadmapWorkspace, action: WorkspaceAction): 
     case "DELETE_QUIZ": return { ...current, quizzes: current.quizzes.filter((quiz) => quiz.id !== action.payload.quizId) };
     case "DUPLICATE_QUIZ": return { ...current, quizzes: [action.payload.duplicate, ...current.quizzes] };
     case "SET_QUIZ_SESSION": return { ...current, quizzes: current.quizzes.map((quiz) => quiz.id === action.payload.quizId ? { ...quiz, session: action.payload.session, revision: quiz.revision + 1, updatedAt: now() } : quiz) };
-    case "FINISH_QUIZ": return { ...current, quizzes: current.quizzes.map((quiz) => quiz.id === action.payload.quizId ? { ...quiz, session: action.payload.session, attempts: [action.payload.attempt, ...quiz.attempts], revision: quiz.revision + 1, updatedAt: now() } : quiz) };
+    case "FINISH_QUIZ": return { ...current, roadmap: { ...current.roadmap, revision: current.roadmap.revision + 1 }, quizzes: current.quizzes.map((quiz) => quiz.id === action.payload.quizId ? { ...quiz, session: action.payload.session, attempts: [action.payload.attempt, ...quiz.attempts], revision: quiz.revision + 2, updatedAt: now() } : quiz) };
   }
+}
+
+function summarize(workspace: RoadmapWorkspace): RoadmapSummary {
+  const items = workspace.progress.sections.flatMap((section) => section.items);
+  const complete = items.filter((item) => item.status === "complete").length;
+  return {
+    id: workspace.roadmap.id,
+    slug: workspace.roadmap.slug,
+    title: workspace.roadmap.title,
+    objective: workspace.roadmap.objective,
+    updatedAt: workspace.roadmap.updatedAt,
+    archivedAt: workspace.roadmap.archivedAt,
+    revision: workspace.roadmap.revision,
+    progress: { complete, total: items.length, percent: items.length ? Math.round((complete / items.length) * 100) : 0 },
+    resourceCount: workspace.roadmap.resources.length,
+  };
 }
 
 export function roadmapReducer(state: RoadmapState, action: InternalAction): RoadmapState {
   if (action.type === "SYNC") return { ...state, sync: action.payload };
   if (action.type === "RESTORE_STATE") return { ...action.payload, sync: { status: "error", message: "Changes were rolled back. Try again." } };
-  if (action.type === "CREATE_ROADMAP") return { ...state, workspaces: [action.payload, ...state.workspaces] };
-  if (action.type === "DELETE_ROADMAP") return { ...state, workspaces: state.workspaces.filter((item) => item.roadmap.id !== action.roadmapId) };
-  if (action.type === "UPDATE_ROADMAP") return { ...state, workspaces: state.workspaces.map((item) => item.roadmap.id === action.roadmapId ? { ...touch(item), roadmap: { ...touch(item).roadmap, ...action.payload } } : item) };
-  if (action.type === "ARCHIVE_ROADMAP" || action.type === "RESTORE_ROADMAP") return { ...state, workspaces: state.workspaces.map((item) => item.roadmap.id === action.roadmapId ? { ...touch(item), roadmap: { ...touch(item).roadmap, archivedAt: action.type === "ARCHIVE_ROADMAP" ? now() : null } } : item) };
-  if (action.type === "WORKSPACE_ACTION") return { ...state, workspaces: state.workspaces.map((item) => item.roadmap.id === action.roadmapId ? updateWorkspace(item, action.action) : item) };
+  if (action.type === "HYDRATE_STATE") return action.payload;
+  if (action.type === "HYDRATE_WORKSPACE") return state.workspaces.some((item) => item.roadmap.id === action.payload.roadmap.id) ? state : { ...state, workspaces: [...state.workspaces, action.payload] };
+  if (action.type === "CREATE_ROADMAP") return { ...state, roadmaps: [summarize(action.payload), ...state.roadmaps], workspaces: [action.payload, ...state.workspaces] };
+  if (action.type === "DELETE_ROADMAP") return { ...state, roadmaps: state.roadmaps.filter((item) => item.id !== action.roadmapId), workspaces: state.workspaces.filter((item) => item.roadmap.id !== action.roadmapId) };
+  if (action.type === "UPDATE_ROADMAP") {
+    const workspace = state.workspaces.find((item) => item.roadmap.id === action.roadmapId);
+    const updatedWorkspace = workspace ? { ...touch(workspace), roadmap: { ...touch(workspace).roadmap, ...action.payload } } : undefined;
+    return {
+      ...state,
+      roadmaps: state.roadmaps.map((item) => item.id === action.roadmapId ? { ...item, ...action.payload, updatedAt: now(), revision: item.revision + 1 } : item),
+      workspaces: updatedWorkspace ? state.workspaces.map((item) => item.roadmap.id === action.roadmapId ? updatedWorkspace : item) : state.workspaces,
+    };
+  }
+  if (action.type === "ARCHIVE_ROADMAP" || action.type === "RESTORE_ROADMAP") {
+    const archivedAt = action.type === "ARCHIVE_ROADMAP" ? now() : null;
+    return {
+      ...state,
+      roadmaps: state.roadmaps.map((item) => item.id === action.roadmapId ? { ...item, archivedAt, updatedAt: now(), revision: item.revision + 1 } : item),
+      workspaces: state.workspaces.map((item) => item.roadmap.id === action.roadmapId ? { ...touch(item), roadmap: { ...touch(item).roadmap, archivedAt } } : item),
+    };
+  }
+  if (action.type === "WORKSPACE_ACTION") {
+    const workspaces = state.workspaces.map((item) => item.roadmap.id === action.roadmapId ? updateWorkspace(item, action.action) : item);
+    const workspace = workspaces.find((item) => item.roadmap.id === action.roadmapId);
+    return { ...state, workspaces, roadmaps: workspace ? state.roadmaps.map((item) => item.id === action.roadmapId ? summarize(workspace) : item) : state.roadmaps };
+  }
   return state;
 }
 
-type ContextValue = { state: RoadmapState; dispatch: (action: RoadmapAction) => void; retry: () => void; simulateFailure: (kind: "error" | "unauthorized") => void };
-const RoadmapsContext = createContext<ContextValue | null>(null); const WorkspaceContext = createContext<string | null>(null);
-export function RoadmapsProvider({ children }: { children: ReactNode }) { const [state, baseDispatch] = useReducer(roadmapReducer, initialRoadmapState); const stateRef = useRef(state); stateRef.current = state; const failureRef = useRef<"error" | "unauthorized" | null>(null); const dispatch = useCallback((action: RoadmapAction) => { const before = stateRef.current; baseDispatch(action); baseDispatch({ type: "SYNC", payload: { status: "saving" } }); window.setTimeout(() => { const failure = failureRef.current; failureRef.current = null; if (failure === "unauthorized") baseDispatch({ type: "SYNC", payload: { status: "unauthorized", message: "Your preview session expired. Sign in again." } }); else if (failure === "error") baseDispatch({ type: "RESTORE_STATE", payload: before }); else baseDispatch({ type: "SYNC", payload: { status: "saved" } }); }, 180); }, []); const value = useMemo(() => ({ state, dispatch, retry: () => baseDispatch({ type: "SYNC", payload: { status: "saved" } }), simulateFailure: (kind: "error" | "unauthorized") => { failureRef.current = kind; } }), [state, dispatch]); return <RoadmapsContext.Provider value={value}>{children}</RoadmapsContext.Provider>; }
+type ContextValue = { state: RoadmapState; dispatch: (action: RoadmapAction) => Promise<boolean>; retry: () => void; userId: string; userEmail: string };
+type WorkspaceContextValue = { roadmapId: string; initialWorkspace: RoadmapWorkspace };
+const RoadmapsContext = createContext<(ContextValue & { hydrateWorkspace: (workspace: RoadmapWorkspace) => void }) | null>(null); const WorkspaceContext = createContext<WorkspaceContextValue | null>(null);
+export function RoadmapsProvider({ children, initialRoadmaps, userId, userEmail }: { children: ReactNode; initialRoadmaps: RoadmapSummary[]; userId: string; userEmail: string }) {
+  const [state, baseDispatch] = useReducer(roadmapReducer, { ...initialRoadmapState, roadmaps: initialRoadmaps });
+  const stateRef = useRef(state);
+  stateRef.current = state;
+  const hydrateWorkspace = useCallback((workspace: RoadmapWorkspace) => {
+    if (stateRef.current.workspaces.some((item) => item.roadmap.id === workspace.roadmap.id)) return;
+    const next = roadmapReducer(stateRef.current, { type: "HYDRATE_WORKSPACE", payload: workspace });
+    stateRef.current = next;
+    baseDispatch({ type: "HYDRATE_WORKSPACE", payload: workspace });
+  }, []);
+  const dispatch = useCallback((action: RoadmapAction): Promise<boolean> => {
+    const beforeState = stateRef.current;
+    const afterState = roadmapReducer(beforeState, action);
+    stateRef.current = afterState;
+    baseDispatch(action);
+    baseDispatch({ type: "SYNC", payload: { status: "saving" } });
+
+    const roadmapId = "roadmapId" in action ? action.roadmapId : action.type === "CREATE_ROADMAP" ? action.payload.roadmap.id : undefined;
+    if (!roadmapId) {
+      baseDispatch({ type: "SYNC", payload: { status: "error", message: "Could not identify the roadmap to save." } });
+      return Promise.resolve(false);
+    }
+    const before = beforeState.workspaces.find((item) => item.roadmap.id === roadmapId);
+    const after = afterState.workspaces.find((item) => item.roadmap.id === roadmapId);
+    const attempt = action.type === "WORKSPACE_ACTION" && action.action.type === "FINISH_QUIZ"
+      ? { quizId: action.action.payload.quizId, value: action.action.payload.attempt }
+      : undefined;
+
+    const summaryAction = action.type === "CREATE_ROADMAP" || action.type === "UPDATE_ROADMAP" || action.type === "ARCHIVE_ROADMAP" || action.type === "RESTORE_ROADMAP" || action.type === "DELETE_ROADMAP";
+    const beforeSummary = beforeState.roadmaps.find((item) => item.id === roadmapId);
+    const afterSummary = afterState.roadmaps.find((item) => item.id === roadmapId);
+    const save = Promise.resolve().then(() => {
+      const repository = createTrailsRepository(createClient(), userId);
+      return summaryAction
+        ? repository.persistRoadmapSummaryTransition(beforeSummary, afterSummary, action.type === "CREATE_ROADMAP" ? action.payload : undefined)
+        : repository.persistWorkspaceTransition(before, after, attempt);
+    });
+    return save
+      .then(() => { baseDispatch({ type: "SYNC", payload: { status: "saved" } }); return true; })
+      .catch((error: unknown) => {
+        stateRef.current = beforeState;
+        baseDispatch({ type: "RESTORE_STATE", payload: beforeState });
+        baseDispatch({ type: "SYNC", payload: { status: error instanceof Error && "kind" in error && error.kind === "unauthorized" ? "unauthorized" : "error", message: error instanceof Error ? error.message : "Save failed. Try again." } });
+        return false;
+      });
+  }, [userId]);
+  const retry = useCallback(() => {
+    window.location.reload();
+  }, []);
+  const value = useMemo(() => ({ state, dispatch, retry, hydrateWorkspace, userId, userEmail }), [state, dispatch, retry, hydrateWorkspace, userId, userEmail]);
+  return <RoadmapsContext.Provider value={value}>{children}</RoadmapsContext.Provider>;
+}
 export function useRoadmaps() { const value = useContext(RoadmapsContext); if (!value) throw new Error("useRoadmaps must be used inside RoadmapsProvider"); return value; }
 export function useWorkspaceBySlug(slug: string) { return useRoadmaps().state.workspaces.find((item) => item.roadmap.slug === slug); }
-export function WorkspaceProvider({ roadmapId, children }: { roadmapId: string; children: ReactNode }) { return <WorkspaceContext.Provider value={roadmapId}>{children}</WorkspaceContext.Provider>; }
-export function useRoadmap() { const roadmapId = useContext(WorkspaceContext); const context = useRoadmaps(); if (!roadmapId) throw new Error("useRoadmap must be used inside WorkspaceProvider"); const workspace = context.state.workspaces.find((item) => item.roadmap.id === roadmapId); if (!workspace) throw new Error("Roadmap workspace was not found"); return { state: workspace, dispatch: (action: WorkspaceAction) => context.dispatch({ type: "WORKSPACE_ACTION", roadmapId, action }) }; }
+export function WorkspaceProvider({ roadmapId, initialWorkspace, children }: { roadmapId: string; initialWorkspace: RoadmapWorkspace; children: ReactNode }) {
+  const { hydrateWorkspace } = useRoadmaps();
+  useEffect(() => hydrateWorkspace(initialWorkspace), [hydrateWorkspace, initialWorkspace]);
+  return <WorkspaceContext.Provider value={{ roadmapId, initialWorkspace }}>{children}</WorkspaceContext.Provider>;
+}
+export function useRoadmap() {
+  const scope = useContext(WorkspaceContext);
+  const context = useRoadmaps();
+  if (!scope) throw new Error("useRoadmap must be used inside WorkspaceProvider");
+  const workspace = context.state.workspaces.find((item) => item.roadmap.id === scope.roadmapId) ?? scope.initialWorkspace;
+  return { state: workspace, dispatch: (action: WorkspaceAction) => { context.hydrateWorkspace(scope.initialWorkspace); return context.dispatch({ type: "WORKSPACE_ACTION", roadmapId: scope.roadmapId, action }); } };
+}
 export function createEmptyWorkspace({ id, slug, title, objective }: { id: string; slug: string; title: string; objective: string }): RoadmapWorkspace { const timestamp = now(); return { roadmap: { id, slug, title, objective, createdAt: timestamp, updatedAt: timestamp, archivedAt: null, revision: 1, resources: [] }, progress: emptyProgress, quizzes: [], progressImport: { source: "manual", schemaVersion: 1, importedAt: null } }; }

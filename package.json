@@ -9,10 +9,18 @@
     "lint": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "db:status": "supabase migration list",
+    "db:dry-run": "supabase db push --linked --dry-run",
+    "db:push": "supabase db push --linked",
+    "db:test": "supabase test db --linked",
+    "db:lint": "supabase db lint --linked",
+    "db:types": "supabase gen types typescript --linked --schema public > lib/persistence/database.types.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^5.9.1",
+    "@supabase/ssr": "0.12.7",
+    "@supabase/supabase-js": "2.116.0",
     "@tailwindcss/postcss": "^4.3.3",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -41,6 +49,7 @@
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "^6.1.1",
     "jsdom": "^30.0.1",
+    "supabase": "2.117.0",
     "typescript": "7.0.2",
     "vitest": "^5.0.1"
   }

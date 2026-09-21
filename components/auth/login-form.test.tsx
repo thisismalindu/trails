@@ -3,30 +3,30 @@ import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { LoginForm } from "./login-form";
 
-const push = vi.fn();
-vi.mock("next/navigation", () => ({
-  usePathname: () => "/login",
-  useRouter: () => ({ push }),
+const { signInWithOAuth } = vi.hoisted(() => ({ signInWithOAuth: vi.fn() }));
+vi.mock("@/lib/supabase/client", () => ({
+  createClient: () => ({ auth: { signInWithOAuth } }),
 }));
 
 describe("LoginForm", () => {
-  beforeEach(() => push.mockClear());
+  beforeEach(() => { signInWithOAuth.mockReset(); signInWithOAuth.mockResolvedValue({ error: null }); });
 
-  it("accepts any non-empty credentials and navigates to roadmaps", async () => {
+  it("starts GitHub OAuth with the app callback", async () => {
     const user = userEvent.setup();
     render(<LoginForm />);
-    await user.type(screen.getByLabelText(/email or username/i), "anything");
-    await user.type(screen.getByLabelText(/password/i), "x");
-    await user.click(screen.getByRole("button", { name: /continue/i }));
-    expect(push).toHaveBeenCalledWith("/roadmaps");
+    await user.click(screen.getByRole("button", { name: /continue with github/i }));
+    expect(signInWithOAuth).toHaveBeenCalledWith({
+      provider: "github",
+      options: { redirectTo: `${window.location.origin}/auth/callback?next=/roadmaps` },
+    });
   });
 
-  it("shows validation when credentials are empty", async () => {
+  it("shows provider errors and allows the user to retry", async () => {
     const user = userEvent.setup();
+    signInWithOAuth.mockResolvedValueOnce({ error: new Error("GitHub provider is unavailable") });
     render(<LoginForm />);
-    await user.click(screen.getByRole("button", { name: /continue/i }));
-    expect(await screen.findByText(/enter any email/i)).toBeInTheDocument();
-    expect(screen.getByText(/enter any password/i)).toBeInTheDocument();
-    expect(push).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: /continue with github/i }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("GitHub provider is unavailable");
+    expect(screen.getByRole("button", { name: /continue with github/i })).toBeEnabled();
   });
 });

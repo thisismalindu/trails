@@ -449,6 +449,128 @@ for each row execute function public.touch_roadmap_from_child();
 create trigger attempts_touch_parents after insert on public.quiz_attempts
 for each row execute function public.touch_quiz_from_attempt();
 
+create or replace function public.finish_quiz_attempt(
+  p_quiz_id uuid,
+  p_expected_definition_revision integer,
+  p_selected_answers jsonb,
+  p_final_session jsonb
+)
+returns public.quiz_attempts
+language plpgsql
+security invoker
+set search_path = ''
+as $$
+declare
+  v_owner_id uuid := auth.uid();
+  v_quiz public.quizzes%rowtype;
+  v_attempt public.quiz_attempts%rowtype;
+  v_total integer;
+  v_answered integer;
+  v_correct integer;
+begin
+  if v_owner_id is null then
+    raise exception 'Authentication is required.' using errcode = '42501';
+  end if;
+  if jsonb_typeof(p_selected_answers) is distinct from 'object'
+    or jsonb_typeof(p_final_session) is distinct from 'object'
+    or p_final_session->>'view' is distinct from 'results'
+    or p_final_session->'selectedAnswers' is distinct from p_selected_answers then
+    raise exception 'A completed quiz session with matching selected answers is required.' using errcode = '22023';
+  end if;
+
+  select * into v_quiz
+  from public.quizzes
+  where id = p_quiz_id and owner_id = v_owner_id
+  for update;
+  if not found then
+    raise exception 'Quiz not found.' using errcode = 'P0002';
+  end if;
+  if v_quiz.definition_revision <> p_expected_definition_revision then
+    raise exception 'The quiz definition changed before this attempt was saved.' using errcode = '40001';
+  end if;
+  if not public.is_valid_quiz_session(p_final_session, v_quiz.definition) then
+    raise exception 'Quiz session does not match the current definition.' using errcode = '23514';
+  end if;
+
+  v_total := jsonb_array_length(v_quiz.definition->'questions');
+  select count(*)::integer into v_answered
+  from jsonb_each(p_selected_answers) selection
+  where jsonb_typeof(selection.value) = 'string'
+    and exists (
+      select 1
+      from jsonb_array_elements(v_quiz.definition->'questions') question
+      cross join jsonb_array_elements(question->'answers') answer
+      where question->>'id' = selection.key
+        and answer->>'id' = selection.value #>> '{}'
+    );
+  if v_answered <> (select count(*)::integer from jsonb_each(p_selected_answers)) then
+    raise exception 'Attempt contains an answer that is not part of this quiz.' using errcode = '23514';
+  end if;
+
+  select count(*)::integer into v_correct
+  from jsonb_array_elements(v_quiz.definition->'questions') question
+  cross join jsonb_array_elements(question->'answers') answer
+  where answer->>'correct' = 'true'
+    and p_selected_answers->>(question->>'id') = answer->>'id';
+
+  insert into public.quiz_attempts (
+    quiz_id, owner_id, definition_revision, selected_answers,
+    correct, incorrect, unanswered, total, percent
+  ) values (
+    v_quiz.id, v_owner_id, v_quiz.definition_revision, p_selected_answers,
+    v_correct, v_answered - v_correct, v_total - v_answered, v_total,
+    case when v_total = 0 then 0 else round((v_correct::numeric / v_total) * 100)::integer end
+  ) returning * into v_attempt;
+
+  update public.quizzes
+  set current_session = p_final_session
+  where id = v_quiz.id and owner_id = v_owner_id;
+
+  return v_attempt;
+end;
+$$;
+
+create or replace function public.list_roadmap_summaries()
+returns table (
+  id uuid,
+  slug text,
+  title text,
+  objective text,
+  updated_at timestamptz,
+  archived_at timestamptz,
+  revision bigint,
+  progress_complete integer,
+  progress_total integer,
+  resource_count bigint
+)
+language sql
+stable
+security invoker
+set search_path = ''
+as $$
+  select
+    roadmap.id,
+    roadmap.slug,
+    roadmap.title,
+    roadmap.objective,
+    roadmap.updated_at,
+    roadmap.archived_at,
+    roadmap.revision,
+    progress.complete,
+    progress.total,
+    (select count(*) from public.resources resource where resource.roadmap_id = roadmap.id)
+  from public.roadmaps roadmap
+  cross join lateral (
+    select
+      count(*) filter (where item->>'status' = 'complete')::integer as complete,
+      count(*)::integer as total
+    from jsonb_array_elements(roadmap.progress_plan->'sections') section
+    cross join lateral jsonb_array_elements(section->'items') item
+  ) progress
+  where roadmap.owner_id = auth.uid()
+  order by roadmap.updated_at desc;
+$$;
+
 alter table public.roadmaps enable row level security;
 alter table public.resources enable row level security;
 alter table public.quizzes enable row level security;
@@ -457,6 +579,10 @@ alter table public.quiz_attempts enable row level security;
 revoke all on table public.roadmaps, public.resources, public.quizzes, public.quiz_attempts from anon, authenticated;
 grant select, insert, update, delete on table public.roadmaps, public.resources, public.quizzes to authenticated;
 grant select, insert on table public.quiz_attempts to authenticated;
+revoke all on function public.finish_quiz_attempt(uuid, integer, jsonb, jsonb) from public, anon;
+grant execute on function public.finish_quiz_attempt(uuid, integer, jsonb, jsonb) to authenticated;
+revoke all on function public.list_roadmap_summaries() from public, anon;
+grant execute on function public.list_roadmap_summaries() to authenticated;
 
 create policy roadmaps_select_owned on public.roadmaps for select to authenticated
 using (owner_id = (select auth.uid()));

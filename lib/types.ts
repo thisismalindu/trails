@@ -26,6 +26,18 @@ export type Roadmap = {
   resources: Resource[];
 };
 
+export type RoadmapSummary = {
+  id: string;
+  slug: string;
+  title: string;
+  objective: string;
+  updatedAt: string;
+  archivedAt: string | null;
+  revision: number;
+  progress: ProgressStats;
+  resourceCount: number;
+};
+
 export type ProgressStatus = "not-started" | "in-progress" | "complete";
 
 export type ProgressItem = {

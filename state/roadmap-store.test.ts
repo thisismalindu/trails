@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sampleProgress } from "@/lib/mock-data";
+import { sampleProgress, sampleWorkspaces } from "@/lib/mock-data";
 import { uniqueRoadmapSlug } from "@/lib/roadmap-utils";
 import {
   createEmptyWorkspace,
@@ -7,7 +7,26 @@ import {
   roadmapReducer,
 } from "@/state/roadmap-store";
 
-const firstId = initialRoadmapState.workspaces[0].roadmap.id;
+const initialState = {
+  ...initialRoadmapState,
+  workspaces: sampleWorkspaces,
+  roadmaps: sampleWorkspaces.map(({ roadmap, progress }) => {
+    const items = progress.sections.flatMap((section) => section.items);
+    const complete = items.filter((item) => item.status === "complete").length;
+    return {
+      id: roadmap.id,
+      slug: roadmap.slug,
+      title: roadmap.title,
+      objective: roadmap.objective,
+      updatedAt: roadmap.updatedAt,
+      archivedAt: roadmap.archivedAt,
+      revision: roadmap.revision,
+      progress: { complete, total: items.length, percent: items.length ? Math.round((complete / items.length) * 100) : 0 },
+      resourceCount: roadmap.resources.length,
+    };
+  }),
+};
+const firstId = sampleWorkspaces[0].roadmap.id;
 
 describe("roadmapReducer", () => {
   it("creates a blank roadmap and generates collision-safe slugs", () => {
@@ -18,13 +37,14 @@ describe("roadmapReducer", () => {
       title: "Modern Web Architecture",
       objective: "Build reliable modern applications.",
     });
-    const state = roadmapReducer(initialRoadmapState, {
+    const state = roadmapReducer(initialState, {
       type: "CREATE_ROADMAP",
       payload: workspace,
     });
     expect(slug).toBe("modern-web-architecture-2");
     expect(state.workspaces[0].roadmap.resources).toEqual([]);
-    expect(state.workspaces).toHaveLength(initialRoadmapState.workspaces.length + 1);
+    expect(state.workspaces).toHaveLength(initialState.workspaces.length + 1);
+    expect(state.roadmaps[0].slug).toBe(slug);
   });
 
   it("scopes resource mutations to one roadmap", () => {
@@ -38,7 +58,7 @@ describe("roadmapReducer", () => {
       createdAt: "2026-09-01T00:00:00.000Z",
       updatedAt: "2026-09-01T00:00:00.000Z",
     };
-    const added = roadmapReducer(initialRoadmapState, {
+    const added = roadmapReducer(initialState, {
       type: "WORKSPACE_ACTION",
       roadmapId: firstId,
       action: { type: "SAVE_RESOURCE", payload: resource },
@@ -49,12 +69,12 @@ describe("roadmapReducer", () => {
       action: { type: "DELETE_RESOURCE", payload: resource.id },
     });
     expect(added.workspaces[0].roadmap.resources[0]).toEqual(resource);
-    expect(added.workspaces[1]).toBe(initialRoadmapState.workspaces[1]);
+    expect(added.workspaces[1]).toBe(initialState.workspaces[1]);
     expect(deleted.workspaces[0].roadmap.resources).not.toContainEqual(resource);
   });
 
   it("imports progress, updates a step, and manages quiz sessions", () => {
-    const imported = roadmapReducer(initialRoadmapState, {
+    const imported = roadmapReducer(initialState, {
       type: "WORKSPACE_ACTION",
       roadmapId: firstId,
       action: { type: "IMPORT_PROGRESS", payload: sampleProgress },
@@ -77,14 +97,14 @@ describe("roadmapReducer", () => {
     });
     expect(toggled.workspaces[0].progress.sections[0].items[2].status).toBe("complete");
     expect(answered.workspaces[0].quizzes[0].session?.selectedAnswers["quiz-1"]).toBe("quiz-1b");
-    expect(answered.workspaces[0].quizzes[0].revision).toBe(initialRoadmapState.workspaces[0].quizzes[0].revision + 1);
+    expect(answered.workspaces[0].quizzes[0].revision).toBe(initialState.workspaces[0].quizzes[0].revision + 1);
     expect(reset.workspaces[0].quizzes[0].session).toBeNull();
   });
 
   it("supports rename, archive, restore, and permanent deletion", () => {
-    const renamed = roadmapReducer(initialRoadmapState, { type: "UPDATE_ROADMAP", roadmapId: firstId, payload: { title: "Renamed", objective: "A sufficiently detailed new objective." } });
+    const renamed = roadmapReducer(initialState, { type: "UPDATE_ROADMAP", roadmapId: firstId, payload: { title: "Renamed", objective: "A sufficiently detailed new objective." } });
     expect(renamed.workspaces[0].roadmap.title).toBe("Renamed");
-    expect(renamed.workspaces[0].roadmap.revision).toBe(initialRoadmapState.workspaces[0].roadmap.revision + 1);
+    expect(renamed.workspaces[0].roadmap.revision).toBe(initialState.workspaces[0].roadmap.revision + 1);
     const archived = roadmapReducer(renamed, { type: "ARCHIVE_ROADMAP", roadmapId: firstId });
     expect(archived.workspaces[0].roadmap.archivedAt).not.toBeNull();
     const restored = roadmapReducer(archived, { type: "RESTORE_ROADMAP", roadmapId: firstId });
@@ -95,7 +115,7 @@ describe("roadmapReducer", () => {
 
   it("adds, edits, moves, and removes progress structure", () => {
     const section = { id: "new-section", title: "New section", items: [] };
-    const added = roadmapReducer(initialRoadmapState, { type: "WORKSPACE_ACTION", roadmapId: firstId, action: { type: "ADD_PROGRESS_SECTION", payload: section } });
+    const added = roadmapReducer(initialState, { type: "WORKSPACE_ACTION", roadmapId: firstId, action: { type: "ADD_PROGRESS_SECTION", payload: section } });
     const withItem = roadmapReducer(added, { type: "WORKSPACE_ACTION", roadmapId: firstId, action: { type: "ADD_PROGRESS_ITEM", payload: { sectionId: section.id, item: { id: "new-item", label: "First label", status: "not-started" } } } });
     const edited = roadmapReducer(withItem, { type: "WORKSPACE_ACTION", roadmapId: firstId, action: { type: "UPDATE_PROGRESS_ITEM", payload: { sectionId: section.id, itemId: "new-item", label: "Edited label" } } });
     expect(edited.workspaces[0].progress.sections.at(-1)?.items[0].label).toBe("Edited label");
