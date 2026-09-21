@@ -1,0 +1,10 @@
+import type { QuizAttempt, QuizData, QuizDefinition, QuizSession, SavedQuiz } from "./types";
+
+const timestamp = () => new Date().toISOString();
+export function quizDefinitionFromImport(data: QuizData): QuizDefinition { return { version: 1, title: data.title, questions: data.questions.map(({ selectedAnswerID: _selection, ...question }) => question) }; }
+export function createSavedQuiz(definition: QuizDefinition, source: "manual" | "sample" | "json" = "manual", id = crypto.randomUUID()): SavedQuiz { const time = timestamp(); return { id, definition, definitionRevision: 1, revision: 1, createdAt: time, updatedAt: time, importProvenance: { source, schemaVersion: 1, importedAt: source === "json" ? time : null }, session: null, attempts: [] }; }
+export function createBlankQuiz(): SavedQuiz { return createSavedQuiz({ version: 1, title: "Untitled quiz", questions: [] }); }
+export function createQuizSession(): QuizSession { return { currentIndex: 0, selectedAnswers: {}, checkedQuestionIds: [], hintQuestionIds: [], view: "taking", startedAt: timestamp() }; }
+export function scoreQuiz(quiz: SavedQuiz, session: QuizSession): Omit<QuizAttempt, "id" | "completedAt"> { const total = quiz.definition.questions.length; const correct = quiz.definition.questions.filter((question) => question.answers.find((answer) => answer.id === session.selectedAnswers[question.id])?.correct).length; const answered = Object.keys(session.selectedAnswers).length; return { definitionRevision: quiz.definitionRevision, selectedAnswers: { ...session.selectedAnswers }, correct, incorrect: answered - correct, unanswered: total - answered, total, percent: total ? Math.round((correct / total) * 100) : 0 }; }
+export function createAttempt(quiz: SavedQuiz, session: QuizSession): QuizAttempt { return { id: crypto.randomUUID(), completedAt: timestamp(), ...scoreQuiz(quiz, session) }; }
+export function getBestAttempt(quiz: SavedQuiz) { return quiz.attempts.reduce<QuizAttempt | null>((best, attempt) => !best || attempt.percent > best.percent ? attempt : best, null); }
